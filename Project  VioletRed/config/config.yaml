@@ -1,0 +1,65 @@
+# ============================================================
+# Global Configuration for LLM Pipeline with Verifier
+# ============================================================
+
+# --------------------------
+# LLM Model Settings
+# --------------------------
+
+
+
+
+llm:
+  model_name: "Qwen/Qwen2.5-3B-Instruct"  # switched to a small public model for local testing
+  load_dtype: "float16"
+  device: "auto"
+
+  # Maximum chain-of-thought tokens before forced stop
+  max_cot_tokens: 512
+
+  # Check verifier every N generated tokens
+  checkpoint_interval: 16
+
+  # Whether the LLM should return logprobs (used by some rule-based verifiers)
+  return_logprobs: true
+
+# --------------------------
+# Verifier Settings
+# --------------------------
+verifier:
+  type: "rule_based"          # options: rule_based, classifier
+  confidence_threshold: 0.5   # only used for trainable verifier
+  enable_self_consistency: false
+
+# --------------------------
+# Pipeline Behaviour
+# --------------------------
+pipeline:
+  enable_early_exit: true
+  exit_on_confident_verdict: false
+  max_verifier_calls: 20
+
+# --------------------------
+# Paths
+# --------------------------
+paths:
+  data_root: "data/"
+  partial_cot_dir: "data/partial_cots/"
+  logs_dir: "experiments/logs/"
+  verifier_checkpoint: "checkpoints/verifier/"  # future use
+
+# --------------------------
+# Generation Settings
+# --------------------------
+generation:
+  temperature: 0.2
+  top_p: 0.9
+  max_new_tokens: 128
+
+# --------------------------
+# Debug Settings
+# --------------------------
+debug:
+  print_partial_cot: false
+  print_verifier_decision: false
+  print_final_answer: true

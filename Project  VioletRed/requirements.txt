@@ -1,0 +1,6 @@
+torch
+transformers
+tokenizers
+pyyaml
+numpy
+accelerate
