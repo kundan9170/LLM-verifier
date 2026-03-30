@@ -22,6 +22,11 @@ llm:
 
   # Whether the LLM should return logprobs (used by some rule-based verifiers)
   return_logprobs: true
+    # Sentence-aware checkpointing
+  # Instead of fixed N tokens, generate until a sentence boundary
+checkpoint:
+  min_tokens: 10     # always generate at least this many before checking
+  max_tokens: 60     # hard cap per chunk (even if no sentence boundary)
 
 # --------------------------
 # Verifier Settings
@@ -36,8 +41,9 @@ verifier:
 # --------------------------
 pipeline:
   enable_early_exit: true
-  exit_on_confident_verdict: false
+  exit_on_confident_verdict: true
   max_verifier_calls: 20
+  min_verifier_calls_before_exit: 2
 
 # --------------------------
 # Paths
@@ -60,6 +66,16 @@ generation:
 # Debug Settings
 # --------------------------
 debug:
-  print_partial_cot: false
-  print_verifier_decision: false
+  print_partial_cot: true
+  print_verifier_decision: true
   print_final_answer: true
+
+
+# ============================================================
+#  Hybrid Verifier Settings
+# ============================================================
+verifier:
+  confidence_threshold: -1.5
+  confidence_window: 3
+  repetition_threshold: 0.6
+  min_checkpoints_before_correct: 2

@@ -6,19 +6,12 @@ class EarlyExitLogic:
     Centralised early-exit policy.
 
     Decides:
-      - Should we STOP reasoning and move to final answer?
-      - Should we CONTINUE generating chain-of-thought?
-      - Should we ABORT (incorrect direction)?
+      - "exit"     : stop reasoning, produce final answer
+      - "continue" : keep generating chain-of-thought
+      - "abort"    : reasoning went wrong, give up
 
-    Inputs:
-      - verifier verdict: "correct", "incorrect", "continue"
-      - current step count
-      - total verifier calls so far
-
-    Outputs:
-      - "exit"
-      - "continue"
-      - "abort"
+    Now includes a minimum-calls guard so we don't exit on the
+    very first "correct" signal (the model might just be starting).
     """
 
     def __init__(self, config_path="config/config.yaml"):
@@ -31,45 +24,40 @@ class EarlyExitLogic:
         self.exit_on_confident_verdict = pipeline_cfg["exit_on_confident_verdict"]
         self.max_verifier_calls = pipeline_cfg["max_verifier_calls"]
 
-    # ----------------------------------------------------------------------
-    # Decision function used by controller
-    # ----------------------------------------------------------------------
+        # Minimum checkpoints before we allow an early exit.
+        # This prevents exiting after just 1 checkpoint when the
+        # model has barely started reasoning.
+        # Default to 2 if not set in config.
+        self.min_calls_before_exit = pipeline_cfg.get("min_verifier_calls_before_exit", 2)
+
     def decide(self, verifier_verdict, verifier_call_count):
         """
         Inputs:
-            verifier_verdict: "correct", "incorrect", or "continue"
+            verifier_verdict:   "correct", "incorrect", or "continue"
             verifier_call_count: number of times verifier has been called
 
         Output:
-            - "exit"
-            - "continue"
-            - "abort"
+            "exit", "continue", or "abort"
         """
 
-        # -----------------------------------------------------------
-        # Safety cap: Too many verifier calls → stop & answer now.
-        # -----------------------------------------------------------
+        # Safety cap: too many verifier calls → stop now
         if verifier_call_count >= self.max_verifier_calls:
             return "exit"
 
-        # -----------------------------------------------------------
-        # If early exit is disabled → always continue
-        # -----------------------------------------------------------
+        # Early exit disabled → always continue
         if not self.enable_early_exit:
             return "continue"
 
-        # -----------------------------------------------------------
-        # Verifier verdict cases:
-        # -----------------------------------------------------------
+        # Incorrect → abort
         if verifier_verdict == "incorrect":
-            # Could also choose to continue (your design choice)
             return "abort"
 
+        # Correct → exit only if enabled AND we've generated enough
         if verifier_verdict == "correct":
-            if self.exit_on_confident_verdict:
+            if self.exit_on_confident_verdict and verifier_call_count >= self.min_calls_before_exit:
                 return "exit"
             else:
                 return "continue"
 
-        # Default: verifier says "continue"
+        # Default: continue
         return "continue"
