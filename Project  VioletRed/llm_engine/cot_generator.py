@@ -1,21 +1,23 @@
 import yaml
 import torch
 from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
     LogitsProcessorList,
     TemperatureLogitsWarper,
     TopPLogitsWarper,
+    TopKLogitsWarper,
 )
 
 
 class CoTGenerator:
     """
-    Generates chain-of-thought token-by-token with:
-    - KV-cache reuse across tokens
-    - Multi-EOS detection (Qwen2.5 compatible)
-    - Sentence-aware checkpointing: generates until a natural
-      sentence boundary, bounded by min/max token limits
+    Generates chain-of-thought token-by-token for Qwen3 thinking mode.
+
+    Key features:
+    - KV-cache reuse across all tokens
+    - Multi-EOS detection (Qwen3 compatible)
+    - </think> token detection (marks transition from CoT to answer)
+    - Token injection: can force </think> into the sequence
+    - Sentence-aware checkpointing
     """
 
     def __init__(self, model, tokenizer, config_path="config/config.yaml"):
@@ -28,23 +30,30 @@ class CoTGenerator:
         self.max_cot_tokens = self.config["llm"]["max_cot_tokens"]
         self.return_logprobs = self.config["llm"]["return_logprobs"]
 
-        # Sentence-aware checkpoint bounds
         ckpt_cfg = self.config["llm"].get("checkpoint", {})
         self.min_chunk_tokens = ckpt_cfg.get("min_tokens", 10)
         self.max_chunk_tokens = ckpt_cfg.get("max_tokens", 60)
 
         self.temperature = self.config["generation"]["temperature"]
         self.top_p = self.config["generation"]["top_p"]
+        self.top_k = self.config["generation"].get("top_k", 20)
 
-        # Pre-build logit processors once
-        self.processors = LogitsProcessorList([
+        # Pre-build logit processors
+        processors = [
             TemperatureLogitsWarper(self.temperature),
             TopPLogitsWarper(self.top_p),
-        ])
+        ]
+        if self.top_k > 0:
+            processors.append(TopKLogitsWarper(self.top_k))
+        self.processors = LogitsProcessorList(processors)
 
-        # Collect ALL eos token IDs
+        # Collect EOS and </think> token IDs
         self.eos_token_ids = self._collect_eos_ids()
+        self.think_end_token_id = self._find_think_end_token()
 
+    # ----------------------------------------------------------------
+    # Token ID collection
+    # ----------------------------------------------------------------
     def _collect_eos_ids(self):
         ids = set()
         tok_eos = self.tokenizer.eos_token_id
@@ -63,41 +72,49 @@ class CoTGenerator:
         print(f"[CoTGenerator] EOS token IDs: {ids}")
         return ids
 
+    def _find_think_end_token(self):
+        """
+        Find the token ID for </think>.
+        Qwen3 has this as a special token in the vocabulary.
+        """
+        # Try encoding </think> — for Qwen3 it should be a single token
+        think_end_tokens = self.tokenizer.encode("</think>", add_special_tokens=False)
+
+        if len(think_end_tokens) == 1:
+            token_id = think_end_tokens[0]
+            print(f"[CoTGenerator] </think> token ID: {token_id}")
+            return token_id
+
+        # If it's multiple tokens, store the full sequence
+        # and we'll detect by text matching instead
+        decoded = self.tokenizer.decode(think_end_tokens)
+        print(f"[CoTGenerator] </think> encodes to {len(think_end_tokens)} tokens: {think_end_tokens}")
+        print(f"[CoTGenerator] Will use text matching for </think> detection")
+        return None
+
+    # ----------------------------------------------------------------
+    # Encode / Decode
+    # ----------------------------------------------------------------
     def encode(self, text):
         return self.tokenizer(text, return_tensors="pt").to(self.model.device)
 
     def decode(self, token_id):
-        return self.tokenizer.decode(token_id, skip_special_tokens=True)
+        return self.tokenizer.decode(token_id, skip_special_tokens=False)
 
     # ----------------------------------------------------------------
     # Sentence boundary detection
     # ----------------------------------------------------------------
     def _is_sentence_boundary(self, generated_text, latest_token_text):
-        """
-        Check if we've reached a natural stopping point.
-
-        We look at the accumulated generated_text (not just the token)
-        because a token might be "." but the sentence isn't done yet
-        (e.g. "3.14"), or a token might be "\n" which forms a step break.
-
-        Returns True if the text ends at a sentence boundary.
-        """
         stripped = generated_text.rstrip()
         if len(stripped) < 5:
             return False
 
-        # Ends with sentence-terminal punctuation
         if stripped.endswith(('.', '?', '!')):
-            # Avoid false positives on decimal numbers like "3.14"
-            # Check that the char before the dot is NOT a digit
             if stripped.endswith('.') and len(stripped) >= 2:
-                char_before = stripped[-2]
-                if char_before.isdigit():
+                if stripped[-2].isdigit():
                     return False
             return True
 
-        # Ends with a newline after meaningful content (step breaks)
-        # e.g. "Step 1: Speed = 13 + 4 = 17 km/hr\n"
         if generated_text.endswith('\n') and len(stripped) > 15:
             return True
 
@@ -151,25 +168,60 @@ class CoTGenerator:
         )
 
         hit_eos = (next_token_id in self.eos_token_ids)
+        hit_think_end = (
+            self.think_end_token_id is not None
+            and next_token_id == self.think_end_token_id
+        )
 
-        return next_token_id, next_token_text, next_logprob, new_input_ids, new_past, hit_eos
+        return (next_token_id, next_token_text, next_logprob,
+                new_input_ids, new_past, hit_eos, hit_think_end)
 
     # ----------------------------------------------------------------
-    # Generate until sentence boundary (sentence-aware checkpoint)
+    # Inject tokens into the sequence (for forcing </think>)
+    # ----------------------------------------------------------------
+    def inject_tokens(self, text, input_ids, past_key_values):
+        """
+        Inject arbitrary text into the token stream.
+        Runs forward passes to update the KV-cache, as if the model
+        had generated these tokens itself.
+
+        Used by the controller to inject '</think>\n\n' when the
+        verifier decides reasoning is complete.
+
+        Returns: (updated_input_ids, updated_past_key_values)
+        """
+        token_ids = self.tokenizer.encode(text, add_special_tokens=False)
+
+        if not token_ids:
+            return input_ids, past_key_values
+
+        # Process all injected tokens in one forward pass
+        inject_tensor = torch.tensor([token_ids], device=self.model.device)
+
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=inject_tensor,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+
+        new_past = outputs.past_key_values
+
+        # Append injected tokens to full input_ids
+        new_input_ids = torch.cat([input_ids, inject_tensor], dim=1)
+
+        return new_input_ids, new_past
+
+    # ----------------------------------------------------------------
+    # Generate until sentence boundary (thinking phase)
     # ----------------------------------------------------------------
     def generate_until_checkpoint(self, prompt_or_ids, past_key_values=None):
         """
-        Generates tokens until a natural sentence boundary is reached,
-        bounded by min_chunk_tokens and max_chunk_tokens.
-
-        Logic:
-          - Always generate at least min_chunk_tokens (don't check boundaries)
-          - Between min and max, stop at the first sentence boundary
-          - At max_chunk_tokens, stop regardless (hard cap)
-          - If EOS is hit at any point, stop immediately
+        Generates tokens until a sentence boundary, EOS, or </think>.
 
         Returns:
-            generated_text, logprobs, input_ids, past_key_values, hit_eos
+            generated_text, logprobs, input_ids, past_key_values,
+            hit_eos, hit_think_end
         """
         if isinstance(prompt_or_ids, str):
             input_ids = self.encode(prompt_or_ids)["input_ids"]
@@ -183,47 +235,50 @@ class CoTGenerator:
         generated_text = ""
         logprobs = []
         hit_eos = False
+        hit_think_end = False
         tokens_generated = 0
 
         for _ in range(self.max_chunk_tokens):
-            tok_id, tok_text, tok_logprob, input_ids, past_key_values, eos = (
-                self.generate_next_token(input_ids, past_key_values)
-            )
+            (tok_id, tok_text, tok_logprob, input_ids, past_key_values,
+             eos, think_end) = self.generate_next_token(input_ids, past_key_values)
+
             generated_text += tok_text
             tokens_generated += 1
 
             if tok_logprob is not None:
                 logprobs.append(tok_logprob)
 
-            # EOS always stops immediately
             if eos:
                 hit_eos = True
                 break
 
-            # After min tokens, check for sentence boundary
+            if think_end:
+                hit_think_end = True
+                break
+
             if tokens_generated >= self.min_chunk_tokens:
                 if self._is_sentence_boundary(generated_text, tok_text):
                     break
 
-        return generated_text, logprobs, input_ids, past_key_values, hit_eos
+        return generated_text, logprobs, input_ids, past_key_values, hit_eos, hit_think_end
 
     # ----------------------------------------------------------------
-    # Generate full chain-of-thought (max tokens, no checkpoints)
+    # Generate until EOS (answering phase — no checkpoints)
     # ----------------------------------------------------------------
-    def generate_full_cot(self, prompt):
-        input_ids = self.encode(prompt)["input_ids"]
+    def generate_until_eos(self, input_ids, past_key_values, max_tokens=200):
+        """
+        After </think>, generate the final answer until EOS.
+        No verifier checks — just let the model finish.
+        """
         generated_text = ""
-        logprobs = []
-        past_key_values = None
 
-        for _ in range(self.max_cot_tokens):
-            tok_id, tok_text, tok_logprob, input_ids, past_key_values, eos = (
-                self.generate_next_token(input_ids, past_key_values)
-            )
+        for _ in range(max_tokens):
+            (tok_id, tok_text, tok_logprob, input_ids, past_key_values,
+             eos, think_end) = self.generate_next_token(input_ids, past_key_values)
+
             generated_text += tok_text
-            if tok_logprob is not None:
-                logprobs.append(tok_logprob)
+
             if eos:
                 break
 
-        return generated_text, logprobs
+        return generated_text.strip(), input_ids, past_key_values

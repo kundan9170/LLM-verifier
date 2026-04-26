@@ -1,0 +1,16 @@
+{
+  "dataset": "math500",
+  "n": 250,
+  "base_accuracy": 94.4,
+  "ver_accuracy": 91.2,
+  "base_avg_tokens": 1023.804,
+  "ver_avg_tokens": 745.32,
+  "token_savings_pct": 27.200909549093378,
+  "aborts": 8,
+  "abort_rate": 3.2,
+  "abort_precision": 12.5,
+  "abort_recall": 7.142857142857143,
+  "abort_when_base_wrong": 1,
+  "abort_when_base_right": 7,
+  "base_wrong_count": 14
+}

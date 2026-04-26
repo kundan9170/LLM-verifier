@@ -43,6 +43,33 @@ class LLMModelLoader:
             raise ValueError(f"Unsupported dtype: {self.load_dtype}")
 
     # ---------------------------------------------------------
+    # def load_model(self):
+    #     print(f"[ModelLoader] Loading tokenizer: {self.model_name}")
+    #     self.tokenizer = AutoTokenizer.from_pretrained(
+    #         self.model_name,
+    #         use_fast=True
+    #     )
+
+    #     # =============================
+    #     # Important fix for Phi-2
+    #     # =============================
+    #     if self.tokenizer.pad_token is None:
+    #         self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    #     print(f"[ModelLoader] Loading model: {self.model_name}")
+    #     torch_dtype = self._dtype_from_string()
+
+    #     self.model = AutoModelForCausalLM.from_pretrained(
+    #         self.model_name,
+    #         torch_dtype=torch_dtype,
+    #         device_map=self.device,
+    #     )
+
+    #     # Also fix pad token on model side
+    #     self.model.config.pad_token_id = self.tokenizer.pad_token_id
+
+    #     print("[ModelLoader] Model and tokenizer loaded successfully.")
+    #     return self.model, self.tokenizer
     def load_model(self):
         print(f"[ModelLoader] Loading tokenizer: {self.model_name}")
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -50,23 +77,31 @@ class LLMModelLoader:
             use_fast=True
         )
 
-        # =============================
-        # Important fix for Phi-2
-        # =============================
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        print(f"[ModelLoader] Loading model: {self.model_name}")
+        print(f"[ModelLoader] Loading model: {self.model_name} with Flash Attention 2")
         torch_dtype = self._dtype_from_string()
+
+        # OPTIMIZATION: Enable TF32 for massive matrix multiplication speedups on Ampere (A100)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             torch_dtype=torch_dtype,
             device_map=self.device,
+            attn_implementation="sdpa"  # OPTIMIZATION: Hardware-accelerated attention
         )
 
-        # Also fix pad token on model side
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
+
+        # # OPTIMIZATION: Compile the forward pass to reduce Python overhead in the token-by-token loop
+        # import warnings
+        # with warnings.catch_warnings():
+        #     warnings.simplefilter("ignore")
+        #     # Compiling just the forward pass is safer for custom loops with dynamic KV caches
+        #     self.model.forward = torch.compile(self.model.forward, mode="reduce-overhead", dynamic=True)
 
         print("[ModelLoader] Model and tokenizer loaded successfully.")
         return self.model, self.tokenizer

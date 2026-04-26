@@ -26,10 +26,13 @@ class FinalAnswerGenerator:
         return self.tokenizer(text, return_tensors="pt").to(self.model.device)
 
     def generate_with_llm(self, partial_cot):
+        # UPDATED PROMPT: Strict mathematical formatting
         prompt = (
-            "You have been reasoning about a question. "
-            "Based on the reasoning below, provide ONLY the final concise answer.\n"
-            "Do not explain your steps.\n\n"
+            "You have been reasoning about a math problem. "
+            "Based on the reasoning below, extract the final mathematical answer. "
+            "Respond with ONLY the final number, fraction, or expression. "
+            "Do NOT include variable assignments, units, text, explanations, or '\\boxed{}' formatting.\n"
+            "Example outputs: 42, \\frac{1}{2}, 2\\pi, (3, 4)\n\n"
             f"Reasoning so far:\n{partial_cot}\n\n"
             "Final Answer:"
         )
@@ -40,7 +43,7 @@ class FinalAnswerGenerator:
             output_ids = self.model.generate(
                 **inputs,
                 max_new_tokens=self.max_new_tokens,
-                temperature=self.temperature,
+                temperature=0.1, # UPDATED TEMPERATURE: strict format extraction
                 top_p=self.top_p,
                 do_sample=True,
             )
