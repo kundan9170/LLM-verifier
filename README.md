@@ -65,7 +65,7 @@ We explored three verifier families of increasing sophistication:
 
 1. **Rule-Based Verifier** — keyword matching for completion (`therefore`, `the answer is`) and self-correction (`wait`, `mistake`) cues. *Too rigid; misses deep structural errors.*
 2. **Hybrid Verifier** — multi-signal: deterministic math (regex + Python recalc), n-gram loop detection (math-aware preprocessing), rolling-logprob confidence. *Brittle on multi-step reasoning.*
-3. **LLM-as-a-Judge** ✅ — small companion model (Qwen3-0.6B) reads each new sentence chunk and grades it as `correct` / `wrong` / `continue`. **Final design used in benchmarks.**
+3. **LLM-as-a-Judge** — small companion model (Qwen3-0.6B) reads each new sentence chunk and grades it as `correct` / `wrong` / `continue`. **Final design used in benchmarks.**
 
 We also conducted a substantial **negative-result study** on internal model signals (entropy, JSD, embedding distance, hidden-state norms, `</think>` token rank) — none gave a reliable, problem-agnostic, hard-codable signal of correctness. See the report for details.
 
