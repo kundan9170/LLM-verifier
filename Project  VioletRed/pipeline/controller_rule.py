@@ -1,7 +1,7 @@
 import yaml
 from llm_engine.cot_generator import CoTGenerator
 from llm_engine.final_answer_generator import FinalAnswerGenerator
-from verifier.hybrid_verifier import HybridVerifier
+from verifier.rule_based_verifier import RuleBasedVerifier
 from pipeline.early_exit_logic import EarlyExitLogic
 from pipeline.utils import print_debug
 
@@ -12,8 +12,8 @@ class PipelineController:
 
     Workflow:
       1. Format prompt using the model's chat template.
-      2. Generate CoT in sentence-aware chunks.
-      3. After each complete sentence → send to verifier.
+      2. Start generating chain-of-thought (CoT).
+      3. Every N tokens → send partial CoT to verifier.
       4. Verifier returns: correct / incorrect / continue.
       5. EarlyExitLogic decides: exit / continue / abort.
       6. If EOS token detected → generate final answer immediately.
@@ -26,24 +26,38 @@ class PipelineController:
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
 
-        self.tokenizer = tokenizer
+        self.tokenizer = tokenizer  # needed for chat template
 
         # Core modules
         self.cot_generator = CoTGenerator(model, tokenizer, config_path)
         self.final_answer_gen = FinalAnswerGenerator(model, tokenizer, config_path)
-        self.verifier = HybridVerifier(config_path)
+        self.verifier = RuleBasedVerifier(config_path)
         self.exit_logic = EarlyExitLogic(config_path)
 
         # Debug flags
         self.debug_cfg = self.config["debug"]
 
-        # Hard cap on total reasoning tokens
+        # LLM generation settings
+        self.checkpoint_interval = self.config["llm"]["checkpoint_interval"]
         self.max_cot_tokens = self.config["llm"]["max_cot_tokens"]
 
     # ----------------------------------------------------------------------
     # Format prompt using the model's chat template
     # ----------------------------------------------------------------------
     def _format_prompt(self, user_query):
+        """
+        Uses tokenizer.apply_chat_template so the model sees the exact
+        format it was trained on. For Qwen2.5-Instruct this produces:
+
+            <|im_start|>system
+            You are a helpful assistant. ...<|im_end|>
+            <|im_start|>user
+            {user_query}<|im_end|>
+            <|im_start|>assistant
+
+        The model will then generate until <|im_end|> (its EOS token),
+        which our EOS detection picks up.
+        """
         messages = [
             {
                 "role": "system",
@@ -59,6 +73,7 @@ class PipelineController:
             },
         ]
 
+        # apply_chat_template returns a string with special tokens
         prompt = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -71,15 +86,16 @@ class PipelineController:
     # MAIN EXECUTION ENTRY POINT
     # ----------------------------------------------------------------------
     def run(self, user_query):
-        print_debug("Starting pipeline...", self.debug_cfg)
+        """
+        Executes the full pipeline and returns the final answer.
+        """
 
-        # Reset verifier state for this new question
-        self.verifier.reset()
+        print_debug("Starting pipeline...", self.debug_cfg)
 
         full_cot = ""
         verifier_call_count = 0
-        total_tokens_generated = 0
 
+        # ---- Format prompt with chat template ----
         prompt = self._format_prompt(user_query)
 
         if self.debug_cfg.get("print_partial_cot"):
@@ -90,10 +106,8 @@ class PipelineController:
 
         # ======================================================
         # MAIN GENERATION LOOP
-        # Runs until: EOS, early exit, abort, or max tokens
-        # Each iteration generates one sentence-aware chunk
         # ======================================================
-        while total_tokens_generated < self.max_cot_tokens:
+        for global_step in range(0, self.max_cot_tokens, self.checkpoint_interval):
 
             source = prompt if input_ids is None else input_ids
 
@@ -102,18 +116,16 @@ class PipelineController:
             )
 
             full_cot += partial_text
-            total_tokens_generated += len(logprobs) if logprobs else len(partial_text.split())
 
             if self.debug_cfg["print_partial_cot"]:
-                print(f"\n[Chunk {verifier_call_count + 1} | ~{total_tokens_generated} tokens]")
-                print(f"  {partial_text.strip()}")
+                print(f"\n[DEBUG Partial CoT] {partial_text}")
 
             # ----- EOS: model finished its response naturally -----
             if hit_eos:
                 print_debug("EOS token detected. Generating final answer...", self.debug_cfg)
                 final_answer = self.final_answer_gen.generate_final_answer(full_cot)
                 if self.debug_cfg["print_final_answer"]:
-                    print(f"\n[Final Answer] {final_answer}")
+                    print(f"[Final Answer] {final_answer}")
                 return final_answer
 
             # ----- Verifier check -----
@@ -125,6 +137,7 @@ class PipelineController:
 
             decision = self.exit_logic.decide(verdict, verifier_call_count)
 
+            print_debug(f"Verifier verdict: {verdict}", self.debug_cfg)
             print_debug(f"Early exit decision: {decision}", self.debug_cfg)
 
             # ==============================
@@ -134,7 +147,7 @@ class PipelineController:
                 print_debug("Early exit triggered. Generating final answer...", self.debug_cfg)
                 final_answer = self.final_answer_gen.generate_final_answer(full_cot)
                 if self.debug_cfg["print_final_answer"]:
-                    print(f"\n[Final Answer] {final_answer}")
+                    print(f"[Final Answer] {final_answer}")
                 return final_answer
 
             elif decision == "abort":

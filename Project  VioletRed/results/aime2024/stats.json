@@ -1,0 +1,16 @@
+{
+  "dataset": "aime2024",
+  "n": 30,
+  "base_accuracy": 90.0,
+  "ver_accuracy": 76.66666666666667,
+  "base_avg_tokens": 953.7333333333333,
+  "ver_avg_tokens": 692.6333333333333,
+  "token_savings_pct": 27.37662519222703,
+  "aborts": 2,
+  "abort_rate": 6.666666666666667,
+  "abort_precision": 0.0,
+  "abort_recall": 0.0,
+  "abort_when_base_wrong": 0,
+  "abort_when_base_right": 2,
+  "base_wrong_count": 3
+}

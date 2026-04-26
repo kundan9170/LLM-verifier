@@ -1,0 +1,16 @@
+{
+  "dataset": "gsm8k",
+  "n": 210,
+  "base_accuracy": 95.23809523809524,
+  "ver_accuracy": 89.04761904761905,
+  "base_avg_tokens": 823.2809523809524,
+  "ver_avg_tokens": 612.6190476190476,
+  "token_savings_pct": 25.588094095055215,
+  "aborts": 9,
+  "abort_rate": 4.285714285714286,
+  "abort_precision": 0.0,
+  "abort_recall": 0.0,
+  "abort_when_base_wrong": 0,
+  "abort_when_base_right": 9,
+  "base_wrong_count": 10
+}

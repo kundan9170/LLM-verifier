@@ -1,81 +1,51 @@
 # ============================================================
-# Global Configuration for LLM Pipeline with Verifier
+#  LLM Reasoning Pipeline — Configuration (Qwen3 + LLM Verifier)
 # ============================================================
 
-# --------------------------
-# LLM Model Settings
-# --------------------------
-
-
-
-
 llm:
-  model_name: "Qwen/Qwen2.5-3B-Instruct"  # switched to a small public model for local testing
-  load_dtype: "float16"
+  model_name: "Qwen/Qwen3-4B"
   device: "auto"
-
-  # Maximum chain-of-thought tokens before forced stop
-  max_cot_tokens: 512
-
-  # Check verifier every N generated tokens
-  checkpoint_interval: 16
-
-  # Whether the LLM should return logprobs (used by some rule-based verifiers)
+  load_dtype: "bfloat16"    # CHANGED: Native A100 optimization
+  max_cot_tokens: 1024
   return_logprobs: true
-    # Sentence-aware checkpointing
-  # Instead of fixed N tokens, generate until a sentence boundary
-checkpoint:
-  min_tokens: 10     # always generate at least this many before checking
-  max_tokens: 60     # hard cap per chunk (even if no sentence boundary)
 
-# --------------------------
-# Verifier Settings
-# --------------------------
-verifier:
-  type: "rule_based"          # options: rule_based, classifier
-  confidence_threshold: 0.5   # only used for trainable verifier
-  enable_self_consistency: false
+  checkpoint:
+    min_tokens: 10
+    max_tokens: 60
 
-# --------------------------
-# Pipeline Behaviour
-# --------------------------
+# Qwen3 thinking mode generation settings
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  max_new_tokens: 200
+
 pipeline:
   enable_early_exit: true
   exit_on_confident_verdict: true
-  max_verifier_calls: 20
-  min_verifier_calls_before_exit: 2
-
-# --------------------------
-# Paths
-# --------------------------
-paths:
-  data_root: "data/"
-  partial_cot_dir: "data/partial_cots/"
-  logs_dir: "experiments/logs/"
-  verifier_checkpoint: "checkpoints/verifier/"  # future use
-
-# --------------------------
-# Generation Settings
-# --------------------------
-generation:
-  temperature: 0.2
-  top_p: 0.9
-  max_new_tokens: 128
-
-# --------------------------
-# Debug Settings
-# --------------------------
-debug:
-  print_partial_cot: true
-  print_verifier_decision: true
-  print_final_answer: true
-
+  max_verifier_calls: 30
+  min_verifier_calls_before_exit: 3
 
 # ============================================================
-#  Hybrid Verifier Settings
+#  LLM Verifier (Qwen3-0.6B judge)
 # ============================================================
 verifier:
-  confidence_threshold: -1.5
-  confidence_window: 3
-  repetition_threshold: 0.6
-  min_checkpoints_before_correct: 2
+  judge_model: "Qwen/Qwen3-0.6B"
+  judge_device: "auto"
+  judge_dtype: "bfloat16"
+
+  # Max tokens for judge response (short: just "correct"/"wrong" + reason)
+  judge_max_tokens: 64
+
+  # Don't return "correct" (done) until this many chunks
+  min_checkpoints_before_correct: 3
+
+  # How confident must the judge be to flag an error (0.0 - 1.0)
+  # Higher = fewer false positives, might miss some errors
+  # Lower = more sensitive, might flag correct steps
+  error_confidence_threshold: 0.6
+
+debug:
+  print_partial_cot: false
+  print_verifier_decision: false
+  print_final_answer: false
